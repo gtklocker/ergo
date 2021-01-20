@@ -3,9 +3,8 @@ package org.ergoplatform.tools
 import java.io.File
 
 import org.ergoplatform._
-import org.ergoplatform.local.ErgoMiner
 import org.ergoplatform.mining.difficulty.RequiredDifficulty
-import org.ergoplatform.mining.{AutolykosPowScheme, CandidateBlock}
+import org.ergoplatform.mining.{AutolykosPowScheme, CandidateBlock, ErgoMiner}
 import org.ergoplatform.modifiers.ErgoFullBlock
 import org.ergoplatform.modifiers.history.popow.PoPowAlgos
 import org.ergoplatform.modifiers.history.popow.PoPowAlgos._
@@ -43,7 +42,7 @@ object ChainGenerator extends App with ErgoTestHelpers {
   val MaxTxsPerBlock: Int = 10
 
   val prover = defaultProver
-  val minerPk = prover.pubKeys.head
+  val minerPk = prover.hdKeys.head.publicImage
   val selfAddressScript = P2PKAddress(minerPk).script
   val minerProp = ErgoScriptPredef.rewardOutputScript(RewardDelay, minerPk)
 
@@ -58,15 +57,16 @@ object ChainGenerator extends App with ErgoTestHelpers {
 
   val miningDelay = 1.second
   val minimalSuffix = 2
+  val complexityLimit = initSettings.nodeSettings.maxTransactionComplexity
   val nodeSettings: NodeConfigurationSettings = NodeConfigurationSettings(StateType.Utxo, verifyTransactions = true,
-    -1, poPoWBootstrap = false, minimalSuffix, mining = false, Constants.DefaultComplexityLimit, miningDelay, useExternalMiner = false,
+    -1, poPoWBootstrap = false, minimalSuffix, mining = false, complexityLimit, miningDelay, useExternalMiner = false,
     miningPubKeyHex = None, offlineGeneration = false, 200, 100000, 100000, 1.minute, rebroadcastCount = 20, 1000000, 100)
   val ms = settings.chainSettings.monetary.copy(
     minerRewardDelay = RewardDelay
   )
   val cs = realNetworkSetting.chainSettings
 
-  val fullHistorySettings: ErgoSettings = ErgoSettings(dir.getAbsolutePath, NetworkType.TestNet, cs, settings.testingSettings,
+  val fullHistorySettings: ErgoSettings = ErgoSettings(dir.getAbsolutePath, NetworkType.TestNet, cs,
     nodeSettings, settings.scorexSettings, settings.walletSettings, CacheSettings.default)
   val stateDir = ErgoState.stateDir(fullHistorySettings)
   stateDir.mkdirs()
@@ -95,7 +95,7 @@ object ChainGenerator extends App with ErgoTestHelpers {
       val (txs, lastOut) = genTransactions(last.map(_.height).getOrElse(ErgoHistory.GenesisHeight),
         initBox, state.stateContext)
 
-      val candidate = genCandidate(prover.pubKeys.head, last, time, txs, state)
+      val candidate = genCandidate(prover.hdPubKeys.head.key, last, time, txs, state)
       val block = proveCandidate(candidate.get)
 
       history.append(block.header).get
@@ -162,7 +162,7 @@ object ChainGenerator extends App with ErgoTestHelpers {
       .flatMap { h =>
         history.typedModifierById[Extension](h.extensionId)
           .flatMap(ext => unpackInterlinks(ext.fields).toOption)
-          .map(updateInterlinks(h, _))
+          .map(popowAlgos.updateInterlinks(h, _))
       }
       .getOrElse(Seq.empty)
     val interlinksExtension = interlinksToExtension(interlinks)
@@ -187,7 +187,7 @@ object ChainGenerator extends App with ErgoTestHelpers {
           currentParams.vote(settings.votingTargets.targets, stateContext.votingData.epochVotes, voteForFork),
           currentParams.blockVersion)
       }
-    }.getOrElse((interlinksExtension, Array(0: Byte, 0: Byte, 0: Byte), Header.CurrentVersion))
+    }.getOrElse((interlinksExtension, Array(0: Byte, 0: Byte, 0: Byte), Header.InitialVersion))
 
     val emissionTxOpt = ErgoMiner.collectEmission(state, minerPk, cs.emissionRules)
     val txs = emissionTxOpt.toSeq ++ txsFromPool
@@ -201,11 +201,11 @@ object ChainGenerator extends App with ErgoTestHelpers {
   private def proveCandidate(candidate: CandidateBlock): ErgoFullBlock = {
     log.info(s"Trying to prove block with parent ${candidate.parentOpt.map(_.encodedId)} and timestamp ${candidate.timestamp}")
 
-    pow.proveCandidate(candidate, prover.secrets.head.w) match {
+    pow.proveCandidate(candidate, prover.hdKeys.head.privateInput.w) match {
       case Some(fb) => fb
       case _ =>
         val interlinks = candidate.parentOpt
-          .map(PoPowAlgos.updateInterlinks(_, PoPowAlgos.unpackInterlinks(candidate.extension.fields).get))
+          .map(popowAlgos.updateInterlinks(_, PoPowAlgos.unpackInterlinks(candidate.extension.fields).get))
           .getOrElse(Seq.empty)
         val minerTag = scorex.utils.Random.randomBytes(Extension.FieldKeySize)
         proveCandidate {

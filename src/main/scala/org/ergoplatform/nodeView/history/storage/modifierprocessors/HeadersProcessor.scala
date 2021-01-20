@@ -20,6 +20,7 @@ import scorex.db.ByteArrayWrapper
 import scorex.util._
 
 import scala.annotation.tailrec
+import scala.collection.mutable.ArrayBuffer
 import scala.util.Try
 
 /**
@@ -199,30 +200,30 @@ trait HeadersProcessor extends ToDownloadProcessor with ScorexLogging with Score
     */
   def headerChainBack(limit: Int, startHeader: Header, until: Header => Boolean): HeaderChain = {
     @tailrec
-    def loop(header: Header, acc: Seq[Header]): Seq[Header] = {
+    def loop(header: Header, acc: scala.collection.mutable.Buffer[Header]): Seq[Header] = {
       if (acc.lengthCompare(limit) == 0 || until(header)) {
         acc
       } else {
         typedModifierById[Header](header.parentId) match {
           case Some(parent: Header) =>
-            loop(parent, acc :+ parent)
+            loop(parent, acc += parent)
           case None if acc.contains(header) =>
             acc
           case _ =>
-            acc :+ header
+            acc += header
         }
       }
     }
 
     if (bestHeaderIdOpt.isEmpty || (limit == 0)) {
-      HeaderChain(Seq.empty)
+      HeaderChain(ArrayBuffer.empty)
     } else {
-      HeaderChain(loop(startHeader, Seq(startHeader)).reverse)
+      HeaderChain(loop(startHeader, ArrayBuffer.empty += startHeader).reverse)
     }
   }
 
   /**
-    * Find first header with the best height <= `height` which id satisfies condition `p`
+    * Find first header with height <= `height` which id satisfies condition `p`
     *
     * @param height - start height
     * @param p      - condition to satisfy
@@ -250,18 +251,23 @@ trait HeadersProcessor extends ToDownloadProcessor with ScorexLogging with Score
     */
   def requiredDifficultyAfter(parent: Header,
                               nextBlockTimestampOpt: Option[Long] = None): Difficulty = {
-    //todo: it is slow to read thousands headers from database for each header
-    //todo; consider caching here
-    //todo: https://github.com/ergoplatform/ergo/issues/872
-    val parentHeight = parent.height
-    val heights = difficultyCalculator.previousHeadersRequiredForRecalculation(parentHeight + 1)
-      .ensuring(_.last == parentHeight)
-    if (heights.lengthCompare(1) == 0) {
-      difficultyCalculator.calculate(Seq(parent))
+    if (parent.height + 1 == settings.chainSettings.voting.version2ActivationHeight) {
+      // Set difficulty for version 2 activation height (where specific difficulty is needed due to PoW change)
+      settings.chainSettings.initialDifficultyVersion2
     } else {
-      val chain = headerChainBack(heights.max - heights.min + 1, parent, _ => false)
-      val headers = chain.headers.filter(p => heights.contains(p.height))
-      difficultyCalculator.calculate(headers)
+      //todo: it is slow to read thousands headers from database for each header
+      //todo; consider caching here
+      //todo: https://github.com/ergoplatform/ergo/issues/872
+      val parentHeight = parent.height
+      val heights = difficultyCalculator.previousHeadersRequiredForRecalculation(parentHeight + 1)
+        .ensuring(_.last == parentHeight)
+      if (heights.lengthCompare(1) == 0) {
+        difficultyCalculator.calculate(Seq(parent))
+      } else {
+        val chain = headerChainBack(heights.max - heights.min + 1, parent, _ => false)
+        val headers = chain.headers.filter(p => heights.contains(p.height))
+        difficultyCalculator.calculate(headers)
+      }
     }
   }
 

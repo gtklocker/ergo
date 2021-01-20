@@ -1,23 +1,30 @@
 package org.ergoplatform.modifiers.history
 
-import org.ergoplatform.modifiers.history.popow.{PoPowHeader, PoPowParams, PoPowProof}
-import org.ergoplatform.modifiers.ErgoFullBlock
-import org.ergoplatform.nodeView.state.StateType
-import org.ergoplatform.utils.generators.{ChainGenerator, ErgoGenerators}
+//import org.ergoplatform.modifiers.history.popow.{PoPowHeader, PoPowParams, PoPowProof}
+//import org.ergoplatform.modifiers.ErgoFullBlock
+//import org.ergoplatform.nodeView.state.StateType
+//import org.ergoplatform.utils.generators.{ChainGenerator, ErgoGenerators}
+//import org.scalacheck.Gen
+//import org.scalatest.prop.GeneratorDrivenPropertyChecks
+//import org.scalatest.{Matchers, PropSpec}
+//import scorex.util.ModifierId
+//import org.ergoplatform.utils.HistoryTestHelpers
+//
+//class PoPowAlgosSpec
+//  extends PropSpec
+//    with Matchers
+//    with HistoryTestHelpers
+//    with ChainGenerator
+//    with ErgoGenerators
+//    with GeneratorDrivenPropertyChecks {
+import Extension.InterlinksVectorPrefix
+import org.ergoplatform.utils.generators.{ErgoGenerators, ChainGenerator}
 import org.scalacheck.Gen
-import org.scalatest.prop.GeneratorDrivenPropertyChecks
-import org.scalatest.{Matchers, PropSpec}
-import scorex.util.ModifierId
-import org.ergoplatform.utils.HistoryTestHelpers
+import org.scalatest.matchers.should.Matchers
+import org.scalatest.propspec.AnyPropSpec
+import scorex.util.{bytesToId, ModifierId}
 
-class PoPowAlgosSpec
-  extends PropSpec
-    with Matchers
-    with HistoryTestHelpers
-    with ChainGenerator
-    with ErgoGenerators
-    with GeneratorDrivenPropertyChecks {
-
+class PoPowAlgosSpec extends AnyPropSpec with Matchers with ChainGenerator with ErgoGenerators {
   import org.ergoplatform.modifiers.history.popow.PoPowAlgos
   import PoPowAlgos._
 
@@ -28,7 +35,11 @@ class PoPowAlgosSpec
     val chain = genChain(ChainLength)
     val genesis = chain.head
     val interlinks = chain.foldLeft(Seq.empty[Seq[ModifierId]]) { case (acc, b) =>
-      acc :+ (if (acc.isEmpty) updateInterlinks(b.header, Seq.empty) else updateInterlinks(b.header, acc.last))
+      acc :+ (if (acc.isEmpty){
+        popowAlgos.updateInterlinks(b.header, Seq.empty)
+      } else {
+        popowAlgos.updateInterlinks(b.header, acc.last)
+      })
     }
 
     interlinks.foreach { links =>
@@ -64,6 +75,7 @@ class PoPowAlgosSpec
 
     unpackedTry.get shouldEqual interlinks
   }
+
 
   property("0 level is always valid for any block") {
     val chain = genChain(10)
@@ -219,5 +231,24 @@ class PoPowAlgosSpec
     val prefix = toPoPoWChain(genChain(1))
     val suffix = toPoPoWChain(genChain(1))
     PoPowProof(0, 0, prefix, suffix.head, suffix.tail.map(_.header)).hasValidConnections() shouldBe false
+  }
+
+  property("proofForInterlink") {
+    val blockIds = Gen.listOfN(255, modifierIdGen).sample.get
+    val extension = PoPowAlgos.interlinksToExtension(blockIds)
+    val blockIdToProve = blockIds.head
+    val proof = proofForInterlink(extension, blockIdToProve)
+
+    proof shouldBe defined
+    val encodedField = proof.get.leafData
+    val numBytesKey = encodedField.head
+    val key = encodedField.tail.take(numBytesKey)
+    val prefix = key.head
+    val value = encodedField.drop(numBytesKey + 1)
+    val blockId = value.tail
+    numBytesKey shouldBe 2
+    prefix shouldBe InterlinksVectorPrefix
+    bytesToId(blockId) shouldBe blockIdToProve
+    proof.get.valid(extension.digest) shouldBe true
   }
 }

@@ -61,6 +61,8 @@ abstract class ErgoNodeViewHolder[State <: ErgoState[State]](settings: ErgoSetti
         log.debug(s"Transaction $tx invalidated. Cause: ${e.getMessage}")
         updateNodeView(updatedMempool = Some(newPool))
         context.system.eventStream.publish(FailedTransaction(tx.id, e, immediateFailure = true))
+      case (_, ProcessingOutcome.DoubleSpendingLoser(winnerTxs)) => // do nothing
+        log.debug(s"Transaction $tx declined, as other transactions $winnerTxs are paying more")
       case (_, ProcessingOutcome.Declined(e)) => // do nothing
         log.debug(s"Transaction $tx declined, reason: ${e.getMessage}")
     }
@@ -183,7 +185,7 @@ abstract class ErgoNodeViewHolder[State <: ErgoState[State]](settings: ErgoSetti
 
     val recoveredStateTry = firstExtensionOpt
       .fold[Try[ErgoStateContext]](Failure(new Exception("Could not find extension to recover from"))
-      )(ext => ErgoStateContext.recover(constants.genesisStateDigest, ext, lastHeaders)(settings.chainSettings.voting))
+      )(ext => ErgoStateContext.recover(constants.genesisStateDigest, ext, lastHeaders)(settings))
       .map { ctx =>
         val recoverVersion = idToVersion(lastHeaders.last.id)
         val recoverRoot = bestFullBlock.header.stateRoot
